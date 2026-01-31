@@ -1,0 +1,84 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'  # v1.0.0, v1.1.0-rc.1 и т.д.
+
+jobs:
+  build-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      
+    strategy:
+      matrix:
+        board: ['esp32-c3', 'esp32-s3']
+        include:
+          - board: esp32-c3
+            chip: esp32c3
+            flash_offset: 0x0000
+          - board: esp32-s3
+            chip: esp32s3
+            flash_offset: 0x0000
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Extract version from tag
+      id: get_version
+      run: |
+        VERSION="${GITHUB_REF#refs/tags/}"
+        echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Version: ${VERSION}"
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install PlatformIO Core
+      run: |
+        python -m pip install --upgrade pip
+        pip install platformio
+        pio --version
+
+    - name: Install ESP-IDF
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-venv cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
+
+    - name: Build firmware
+      run: |
+        echo "Building for ${{ matrix.board }}"
+        cd firmware/${{ matrix.board }}
+        
+        # Обновляем версию в коде
+        sed -i "s/FIRMWARE_VERSION \".*\"/FIRMWARE_VERSION \"${{ steps.get_version.outputs.VERSION }}\"/" src/main.cpp
+        
+        pio run
+        
+        # Копируем артефакты
+        mkdir -p ../../_build/${{ matrix.board }}
+        cp .pio/build/*/firmware.bin ../../_build/${{ matrix.board }}/catos-${{ matrix.board }}-${{ steps.get_version.outputs.VERSION }}.bin
+        cp .pio/build/*/firmware.elf ../../_build/${{ matrix.board }}/catos-${{ matrix.board }}-${{ steps.get_version.outputs.VERSION }}.elf
+        
+        # Генерируем MD5 суммы
+        cd ../../_build/${{ matrix.board }}
+        md5sum *.bin > checksums.md5
+
+    - name: Create release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        name: CatOS Watch ${{ steps.get_version.outputs.VERSION }}
+        draft: false
+        prerelease: ${{ contains(github.ref, '-rc.') || contains(github.ref, '-beta.') || contains(github.ref, '-alpha.') }}
+        generate_release_notes: true
+        files: |
+          _build/**/*.bin
+          _build/**/*.elf
+          _build/**/checksums.md5
